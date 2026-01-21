@@ -87,24 +87,43 @@ export async function getDailyTrends(days: number = 14) {
     .gte('created_at', fromDate.toISOString())
     .order('created_at', { ascending: true });
 
-  if (error || !data) return [];
+  if (error) return [];
 
-  // Agrupar por día
+  // Crear mapa con todos los días del rango (incluyendo días sin datos)
   const byDay = new Map<string, Record<string, number>>();
 
-  data.forEach(log => {
-    const day = new Date(log.created_at).toISOString().split('T')[0];
-    if (!byDay.has(day)) {
-      byDay.set(day, {});
-    }
-    const dayData = byDay.get(day)!;
-    dayData[log.emotion] = (dayData[log.emotion] || 0) + 1;
-  });
+  // Inicializar todos los días del rango con valores en cero
+  for (let i = days; i >= 0; i--) {
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    const dayKey = date.toISOString().split('T')[0];
+    byDay.set(dayKey, {
+      'muy-mal': 0,
+      'mal': 0,
+      'neutral': 0,
+      'bien': 0,
+      'muy-bien': 0,
+    });
+  }
 
-  return Array.from(byDay.entries()).map(([date, emotions]) => ({
-    date,
-    ...emotions,
-  }));
+  // Rellenar con datos reales donde existan
+  if (data) {
+    data.forEach(log => {
+      const day = new Date(log.created_at).toISOString().split('T')[0];
+      if (byDay.has(day)) {
+        const dayData = byDay.get(day)!;
+        dayData[log.emotion] = (dayData[log.emotion] || 0) + 1;
+      }
+    });
+  }
+
+  // Ordenar por fecha y retornar
+  return Array.from(byDay.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, emotions]) => ({
+      date,
+      ...emotions,
+    }));
 }
 
 // Obtener logs con riesgo potencial
