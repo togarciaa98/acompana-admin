@@ -16,12 +16,16 @@ import {
   getOverviewStats,
   getEmotionDistribution,
   getDailyTrends,
-  getAtRiskDevices,
   getPeakHours,
-  getRegisteredUsers,
   getUserStats,
-  UserData,
-  calculateAge,
+  getAlertsWithConsentStatus,
+  getContactsWithConsent,
+  logIntervention,
+  getInterventions,
+  getTabCounts,
+  AlertWithConsent,
+  ContactWithConsent,
+  Intervention,
 } from './supabase';
 
 ChartJS.register(
@@ -62,12 +66,6 @@ type OverviewStats = {
   activeUsers: number;
 };
 
-type AtRiskDevice = {
-  deviceId: string;
-  negativeCount: number;
-  lastActivity: string;
-};
-
 type UserStatsData = {
   total: number;
   byGender: Record<string, number>;
@@ -81,6 +79,8 @@ const GENDER_LABELS: Record<string, string> = {
   'no-binario': 'No binario',
   'no-especificado': 'No especificado',
 };
+
+const AGE_RANGE_ORDER = ['13-17', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
 
 function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState('');
@@ -145,17 +145,249 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   );
 }
 
+// Modal para registrar intervención
+function InterventionModal({
+  isOpen,
+  onClose,
+  contact,
+  onSave,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  contact: ContactWithConsent | null;
+  onSave: () => void;
+}) {
+  const [outcome, setOutcome] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  if (!isOpen || !contact) return null;
+
+  const handleSave = async () => {
+    if (!outcome) return;
+    setSaving(true);
+    try {
+      await logIntervention({
+        anonymousId: contact.anonymousId,
+        alertType: 'manual_contact',
+        contactOutcome: outcome,
+        adminNotes: notes || undefined,
+      });
+      onSave();
+      onClose();
+      setOutcome('');
+      setNotes('');
+    } catch (error) {
+      console.error('Error saving intervention:', error);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md p-6">
+        <h3 className="text-lg font-semibold text-slate-800 mb-4">
+          Registrar contacto
+        </h3>
+
+        <div className="mb-4 p-3 bg-slate-50 rounded-xl">
+          <p className="text-sm text-slate-500">Contactando a:</p>
+          <p className="font-medium text-slate-800">{contact.name}</p>
+          <p className="text-sm text-slate-600">{contact.phone}</p>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Resultado del contacto *
+          </label>
+          <select
+            value={outcome}
+            onChange={(e) => setOutcome(e.target.value)}
+            className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
+          >
+            <option value="">Seleccionar...</option>
+            <option value="successful">Contacto exitoso - Usuario atendido</option>
+            <option value="no_answer">No contestó</option>
+            <option value="declined">Declinó ayuda</option>
+            <option value="referred">Referido a especialista</option>
+            <option value="emergency">Emergencia - Activado protocolo</option>
+            <option value="follow_up">Requiere seguimiento</option>
+          </select>
+        </div>
+
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Notas (opcional)
+          </label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+            rows={3}
+            placeholder="Observaciones del contacto..."
+          />
+        </div>
+
+        <div className="flex space-x-3">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!outcome || saving}
+            className="flex-1 px-4 py-3 bg-primary text-white rounded-xl hover:bg-primary-700 disabled:opacity-50"
+          >
+            {saving ? 'Guardando...' : 'Guardar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Modal para ver historial de intervenciones
+function InterventionHistoryModal({
+  isOpen,
+  onClose,
+  anonymousId,
+  contactName,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  anonymousId: string;
+  contactName: string;
+}) {
+  const [interventions, setInterventions] = useState<Intervention[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (isOpen && anonymousId) {
+      loadInterventions();
+    }
+  }, [isOpen, anonymousId]);
+
+  const loadInterventions = async () => {
+    setLoading(true);
+    const data = await getInterventions(anonymousId);
+    setInterventions(data);
+    setLoading(false);
+  };
+
+  if (!isOpen) return null;
+
+  const outcomeLabels: Record<string, string> = {
+    successful: 'Exitoso',
+    no_answer: 'No contestó',
+    declined: 'Declinó',
+    referred: 'Referido',
+    emergency: 'Emergencia',
+    follow_up: 'Seguimiento',
+  };
+
+  const outcomeColors: Record<string, string> = {
+    successful: 'bg-green-100 text-green-700',
+    no_answer: 'bg-yellow-100 text-yellow-700',
+    declined: 'bg-slate-100 text-slate-700',
+    referred: 'bg-blue-100 text-blue-700',
+    emergency: 'bg-red-100 text-red-700',
+    follow_up: 'bg-purple-100 text-purple-700',
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-lg p-6 max-h-[80vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-800">
+              Historial de contactos
+            </h3>
+            <p className="text-sm text-slate-500">{contactName}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : interventions.length > 0 ? (
+            <div className="space-y-3">
+              {interventions.map((intervention) => (
+                <div
+                  key={intervention.id}
+                  className="p-4 bg-slate-50 rounded-xl"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span
+                      className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                        outcomeColors[intervention.contactOutcome || ''] ||
+                        'bg-slate-100 text-slate-700'
+                      }`}
+                    >
+                      {outcomeLabels[intervention.contactOutcome || ''] ||
+                        intervention.contactOutcome}
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      {new Date(intervention.createdAt).toLocaleDateString(
+                        'es-MX',
+                        {
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        }
+                      )}
+                    </span>
+                  </div>
+                  {intervention.adminNotes && (
+                    <p className="text-sm text-slate-600">
+                      {intervention.adminNotes}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <p className="text-slate-400">No hay contactos registrados</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [stats, setStats] = useState<OverviewStats | null>(null);
   const [emotionDist, setEmotionDist] = useState<Record<string, number>>({});
   const [dailyTrends, setDailyTrends] = useState<any[]>([]);
-  const [atRisk, setAtRisk] = useState<AtRiskDevice[]>([]);
   const [peakHours, setPeakHours] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState(7);
-  const [users, setUsers] = useState<UserData[]>([]);
   const [userStats, setUserStats] = useState<UserStatsData | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'users'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'stats' | 'alerts' | 'contacts'>('stats');
+
+  // Nivel B data
+  const [alerts, setAlerts] = useState<AlertWithConsent[]>([]);
+  const [contacts, setContacts] = useState<ContactWithConsent[]>([]);
+  const [tabCounts, setTabCounts] = useState({ alerts: 0, contacts: 0 });
+
+  // Modal states
+  const [interventionModalOpen, setInterventionModalOpen] = useState(false);
+  const [selectedContact, setSelectedContact] = useState<ContactWithConsent | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [historyContact, setHistoryContact] = useState<{ anonymousId: string; name: string } | null>(null);
 
   useEffect(() => {
     loadData();
@@ -164,23 +396,25 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [statsData, distData, trendsData, riskData, hoursData, usersData, userStatsData] = await Promise.all([
+      const [statsData, distData, trendsData, hoursData, userStatsData, alertsData, contactsData, counts] = await Promise.all([
         getOverviewStats(),
         getEmotionDistribution(timeRange),
         getDailyTrends(timeRange),
-        getAtRiskDevices(),
         getPeakHours(timeRange),
-        getRegisteredUsers(),
         getUserStats(),
+        getAlertsWithConsentStatus(),
+        getContactsWithConsent(),
+        getTabCounts(),
       ]);
 
       setStats(statsData);
       setEmotionDist(distData);
       setDailyTrends(trendsData);
-      setAtRisk(riskData);
       setPeakHours(hoursData);
-      setUsers(usersData);
       setUserStats(userStatsData);
+      setAlerts(alertsData);
+      setContacts(contactsData);
+      setTabCounts(counts);
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -190,6 +424,16 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const handleLogout = () => {
     localStorage.removeItem('admin_authenticated');
     onLogout();
+  };
+
+  const handleContactClick = (contact: ContactWithConsent) => {
+    setSelectedContact(contact);
+    setInterventionModalOpen(true);
+  };
+
+  const handleViewHistory = (anonymousId: string, name: string) => {
+    setHistoryContact({ anonymousId, name });
+    setHistoryModalOpen(true);
   };
 
   const emotionChartData = {
@@ -264,6 +508,35 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     ],
   };
 
+  // Datos para gráfico de edad
+  const sortedAgeData = AGE_RANGE_ORDER
+    .filter(range => userStats?.byAge?.[range])
+    .map(range => ({ range, count: userStats?.byAge?.[range] || 0 }));
+
+  const ageChartData = {
+    labels: sortedAgeData.map(d => d.range),
+    datasets: [
+      {
+        label: 'Usuarios',
+        data: sortedAgeData.map(d => d.count),
+        backgroundColor: '#6366F1',
+        borderRadius: 4,
+      },
+    ],
+  };
+
+  // Datos para gráfico de género
+  const genderChartData = {
+    labels: Object.keys(userStats?.byGender || {}).map(g => GENDER_LABELS[g] || g),
+    datasets: [
+      {
+        data: Object.values(userStats?.byGender || {}),
+        backgroundColor: ['#3B82F6', '#EC4899', '#8B5CF6', '#94A3B8'],
+        borderWidth: 0,
+      },
+    ],
+  };
+
   // Calcular porcentaje de emociones negativas
   const totalEmotions = Object.values(emotionDist).reduce((a, b) => a + b, 0);
   const negativeEmotions = (emotionDist['muy-mal'] || 0) + (emotionDist['mal'] || 0);
@@ -296,7 +569,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              {activeTab === 'dashboard' && (
+              {activeTab === 'stats' && (
                 <div className="flex items-center space-x-2">
                   <span className="text-sm text-slate-500">Período:</span>
                   <select
@@ -311,6 +584,15 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 </div>
               )}
               <button
+                onClick={loadData}
+                className="text-sm text-slate-500 hover:text-slate-700 flex items-center space-x-1"
+              >
+                <span>Actualizar</span>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+              <button
                 onClick={handleLogout}
                 className="text-sm text-slate-500 hover:text-slate-700 flex items-center space-x-1"
               >
@@ -321,46 +603,80 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               </button>
             </div>
           </div>
-          {/* Tabs */}
+          {/* Tabs - 3 pestañas del sistema de privacidad */}
           <div className="flex space-x-1 mt-4">
             <button
-              onClick={() => setActiveTab('dashboard')}
+              onClick={() => setActiveTab('stats')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'dashboard'
+                activeTab === 'stats'
                   ? 'bg-primary text-white'
                   : 'text-slate-600 hover:bg-slate-100'
               }`}
             >
-              📊 Dashboard
+              📊 Estadísticas
             </button>
             <button
-              onClick={() => setActiveTab('users')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'users'
+              onClick={() => setActiveTab('alerts')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-1 ${
+                activeTab === 'alerts'
                   ? 'bg-primary text-white'
                   : 'text-slate-600 hover:bg-slate-100'
               }`}
             >
-              👥 Usuarios ({userStats?.total || 0})
+              <span>🚨 Alertas</span>
+              {tabCounts.alerts > 0 && (
+                <span className={`px-1.5 py-0.5 rounded-full text-xs ${
+                  activeTab === 'alerts' ? 'bg-white/20' : 'bg-red-100 text-red-600'
+                }`}>
+                  {tabCounts.alerts}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab('contacts')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-1 ${
+                activeTab === 'contacts'
+                  ? 'bg-primary text-white'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <span>🤝 Contactos</span>
+              {tabCounts.contacts > 0 && (
+                <span className={`px-1.5 py-0.5 rounded-full text-xs ${
+                  activeTab === 'contacts' ? 'bg-white/20' : 'bg-blue-100 text-blue-600'
+                }`}>
+                  {tabCounts.contacts}
+                </span>
+              )}
             </button>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {activeTab === 'users' ? (
-          /* Users Tab */
-          <div>
-            {/* User Stats Cards */}
+        {/* ============================================ */}
+        {/* TAB 1: ESTADÍSTICAS (Nivel A - Anónimo) */}
+        {/* ============================================ */}
+        {activeTab === 'stats' && (
+          <>
+            {/* Banner de nivel de privacidad */}
+            <div className="mb-6 p-3 bg-green-50 border border-green-200 rounded-xl flex items-center space-x-2">
+              <span className="text-lg">🔒</span>
+              <p className="text-sm text-green-700">
+                <strong>Nivel A:</strong> Todos los datos en esta vista son anónimos y agregados. No se muestra información personal identificable.
+              </p>
+            </div>
+
+            {/* Stats cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
               <div className="bg-white rounded-2xl p-6 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-slate-500 text-sm">Total usuarios</p>
-                    <p className="text-3xl font-bold text-slate-800">{userStats?.total || 0}</p>
+                    <p className="text-slate-500 text-sm">Total registros</p>
+                    <p className="text-3xl font-bold text-slate-800">{stats?.totalLogs || 0}</p>
                   </div>
                   <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
-                    <span className="text-2xl">👥</span>
+                    <span className="text-2xl">📊</span>
                   </div>
                 </div>
               </div>
@@ -368,8 +684,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               <div className="bg-white rounded-2xl p-6 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-slate-500 text-sm">Nuevos esta semana</p>
-                    <p className="text-3xl font-bold text-green-600">{userStats?.thisWeek || 0}</p>
+                    <p className="text-slate-500 text-sm">Esta semana</p>
+                    <p className="text-3xl font-bold text-slate-800">{stats?.weekLogs || 0}</p>
                   </div>
                   <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
                     <span className="text-2xl">📈</span>
@@ -380,17 +696,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               <div className="bg-white rounded-2xl p-6 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-slate-500 text-sm">Por género</p>
-                    <div className="text-sm mt-1">
-                      {userStats?.byGender && Object.entries(userStats.byGender).slice(0, 2).map(([g, c]) => (
-                        <span key={g} className="mr-2 text-slate-600">
-                          {GENDER_LABELS[g] || g}: {c}
-                        </span>
-                      ))}
-                    </div>
+                    <p className="text-slate-500 text-sm">Dispositivos activos</p>
+                    <p className="text-3xl font-bold text-slate-800">{stats?.activeUsers || 0}</p>
                   </div>
                   <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-                    <span className="text-2xl">⚧</span>
+                    <span className="text-2xl">📱</span>
                   </div>
                 </div>
               </div>
@@ -398,297 +708,486 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               <div className="bg-white rounded-2xl p-6 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-slate-500 text-sm">Rango de edad más común</p>
-                    <p className="text-xl font-bold text-slate-800">
-                      {userStats?.byAge && Object.entries(userStats.byAge).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A'}
+                    <p className="text-slate-500 text-sm">% Emociones negativas</p>
+                    <p className={`text-3xl font-bold ${Number(negativePercentage) > 30 ? 'text-red-500' : 'text-slate-800'}`}>
+                      {negativePercentage}%
                     </p>
                   </div>
                   <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
-                    <span className="text-2xl">🎂</span>
+                    <span className="text-2xl">⚠️</span>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Users Table */}
-            <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-slate-200">
-                <h2 className="text-lg font-semibold text-slate-800">Usuarios registrados</h2>
-                <p className="text-sm text-slate-500">Lista de todos los usuarios de la app</p>
+            {/* Charts row */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+              {/* Distribución de emociones */}
+              <div className="bg-white rounded-2xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4">
+                  Distribución de emociones
+                </h2>
+                <div className="h-64 flex items-center justify-center">
+                  {totalEmotions > 0 ? (
+                    <Doughnut
+                      data={emotionChartData}
+                      options={{
+                        plugins: {
+                          legend: {
+                            position: 'bottom',
+                          },
+                        },
+                        maintainAspectRatio: false,
+                      }}
+                    />
+                  ) : (
+                    <p className="text-slate-400">Sin datos disponibles</p>
+                  )}
+                </div>
               </div>
 
-              {users.length > 0 ? (
+              {/* Tendencias diarias */}
+              <div className="bg-white rounded-2xl p-6 shadow-sm lg:col-span-2">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4">
+                  Tendencias diarias
+                </h2>
+                <div className="h-64">
+                  {dailyTrends.length > 0 ? (
+                    <Line
+                      data={trendChartData}
+                      options={{
+                        plugins: {
+                          legend: {
+                            position: 'top',
+                          },
+                        },
+                        scales: {
+                          y: {
+                            beginAtZero: true,
+                          },
+                        },
+                        maintainAspectRatio: false,
+                      }}
+                    />
+                  ) : (
+                    <div className="h-full flex items-center justify-center">
+                      <p className="text-slate-400">Sin datos disponibles</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Segunda fila - Horas pico y Demografía */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+              {/* Horas pico */}
+              <div className="bg-white rounded-2xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4">
+                  Horarios de uso
+                </h2>
+                <div className="h-64">
+                  <Bar
+                    data={hoursChartData}
+                    options={{
+                      plugins: {
+                        legend: {
+                          display: false,
+                        },
+                      },
+                      scales: {
+                        y: {
+                          beginAtZero: true,
+                        },
+                      },
+                      maintainAspectRatio: false,
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Demografía anónima */}
+              <div className="bg-white rounded-2xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4">
+                  Demografía anónima
+                </h2>
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Por género */}
+                  <div>
+                    <p className="text-sm text-slate-500 mb-2">Por género</p>
+                    <div className="h-40">
+                      {Object.keys(userStats?.byGender || {}).length > 0 ? (
+                        <Doughnut
+                          data={genderChartData}
+                          options={{
+                            plugins: {
+                              legend: {
+                                position: 'bottom',
+                                labels: { boxWidth: 12, font: { size: 10 } },
+                              },
+                            },
+                            maintainAspectRatio: false,
+                          }}
+                        />
+                      ) : (
+                        <div className="h-full flex items-center justify-center">
+                          <p className="text-slate-400 text-sm">Sin datos</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {/* Por edad */}
+                  <div>
+                    <p className="text-sm text-slate-500 mb-2">Por rango de edad</p>
+                    <div className="h-40">
+                      {sortedAgeData.length > 0 ? (
+                        <Bar
+                          data={ageChartData}
+                          options={{
+                            indexAxis: 'y',
+                            plugins: {
+                              legend: { display: false },
+                            },
+                            scales: {
+                              x: { beginAtZero: true },
+                            },
+                            maintainAspectRatio: false,
+                          }}
+                        />
+                      ) : (
+                        <div className="h-full flex items-center justify-center">
+                          <p className="text-slate-400 text-sm">Sin datos</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 pt-4 border-t border-slate-100">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Total usuarios anónimos:</span>
+                    <span className="font-medium text-slate-800">{userStats?.total || 0}</span>
+                  </div>
+                  <div className="flex justify-between text-sm mt-1">
+                    <span className="text-slate-500">Nuevos esta semana:</span>
+                    <span className="font-medium text-green-600">+{userStats?.thisWeek || 0}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer disclaimer */}
+            <div className="mt-8 p-4 bg-slate-100 rounded-xl">
+              <p className="text-sm text-slate-500 text-center">
+                📊 Todos los datos son anónimos y agregados. No se almacena información personal identificable.
+                <br />
+                Este panel es solo para uso institucional autorizado.
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* ============================================ */}
+        {/* TAB 2: ALERTAS */}
+        {/* ============================================ */}
+        {activeTab === 'alerts' && (
+          <>
+            {/* Banner explicativo */}
+            <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center space-x-2">
+              <span className="text-lg">⚠️</span>
+              <p className="text-sm text-amber-700">
+                Dispositivos con 3+ registros negativos (muy mal/mal) en los últimos 5 días.
+                Solo puedes contactar a quienes dieron consentimiento explícito.
+              </p>
+            </div>
+
+            {alerts.length > 0 ? (
+              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-slate-200">
+                  <h2 className="text-lg font-semibold text-slate-800">
+                    Dispositivos en alerta ({alerts.length})
+                  </h2>
+                </div>
+
+                <div className="divide-y divide-slate-100">
+                  {alerts.map((alert, index) => (
+                    <div
+                      key={index}
+                      className="p-4 hover:bg-slate-50 flex items-center justify-between"
+                    >
+                      <div className="flex items-center space-x-4">
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                          alert.hasConsent ? 'bg-green-100' : 'bg-slate-100'
+                        }`}>
+                          <span className="text-xl">
+                            {alert.hasConsent ? '🤝' : '🔒'}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="font-medium text-slate-800">
+                            ID: {alert.anonymousId}
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            {alert.negativeCount} registros negativos •
+                            Último: {new Date(alert.lastActivity).toLocaleDateString('es-MX', {
+                              day: 'numeric',
+                              month: 'short',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        {alert.hasConsent ? (
+                          <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
+                            Con consentimiento
+                          </span>
+                        ) : (
+                          <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-full text-sm">
+                            Sin consentimiento
+                          </span>
+                        )}
+                        <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                          <span className="text-red-500 font-semibold text-sm">
+                            {alert.negativeCount}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-2xl p-12 shadow-sm text-center">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <span className="text-3xl">✓</span>
+                </div>
+                <h3 className="text-lg font-medium text-slate-800 mb-2">
+                  Sin alertas activas
+                </h3>
+                <p className="text-slate-500">
+                  No hay dispositivos con patrones de riesgo en los últimos 5 días.
+                </p>
+              </div>
+            )}
+
+            {/* Resumen */}
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <p className="text-sm text-slate-500">Total en alerta</p>
+                <p className="text-2xl font-bold text-slate-800">{alerts.length}</p>
+              </div>
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <p className="text-sm text-slate-500">Con consentimiento</p>
+                <p className="text-2xl font-bold text-green-600">
+                  {alerts.filter(a => a.hasConsent).length}
+                </p>
+              </div>
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <p className="text-sm text-slate-500">Sin consentimiento</p>
+                <p className="text-2xl font-bold text-slate-400">
+                  {alerts.filter(a => !a.hasConsent).length}
+                </p>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ============================================ */}
+        {/* TAB 3: CONTACTOS (Nivel B - Con consentimiento) */}
+        {/* ============================================ */}
+        {activeTab === 'contacts' && (
+          <>
+            {/* Banner de nivel de privacidad */}
+            <div className="mb-6 p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center space-x-2">
+              <span className="text-lg">🤝</span>
+              <p className="text-sm text-blue-700">
+                <strong>Nivel B:</strong> Contactos que dieron consentimiento explícito para ser contactados en caso de necesitar apoyo.
+              </p>
+            </div>
+
+            {contacts.length > 0 ? (
+              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-slate-200">
+                  <h2 className="text-lg font-semibold text-slate-800">
+                    Contactos con consentimiento ({contacts.length})
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    Personas que autorizaron ser contactadas si necesitan apoyo
+                  </p>
+                </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full">
                     <thead className="bg-slate-50">
                       <tr>
                         <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
-                          Nombre
+                          Contacto
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
-                          Fecha Nac.
+                          Estado
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
-                          Edad
+                          Consentimiento
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
-                          Género
+                          Último contacto
                         </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
-                          Teléfono
-                        </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
-                          Registro
+                        <th className="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">
+                          Acciones
                         </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {users.map((user) => {
-                        const age = user.birth_date ? calculateAge(user.birth_date) : user.age;
-                        return (
-                        <tr key={user.id} className="hover:bg-slate-50">
+                      {contacts.map((contact) => (
+                        <tr key={contact.id} className="hover:bg-slate-50">
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="flex items-center">
-                              <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center mr-3">
+                              <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center mr-3">
                                 <span className="text-white text-sm font-medium">
-                                  {user.name.charAt(0).toUpperCase()}
+                                  {contact.name.charAt(0).toUpperCase()}
                                 </span>
                               </div>
-                              <span className="font-medium text-slate-800">{user.name}</span>
+                              <div>
+                                <p className="font-medium text-slate-800">{contact.name}</p>
+                                <p className="text-sm text-slate-500">{contact.phone}</p>
+                              </div>
                             </div>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-slate-600">
-                            {user.birth_date ? new Date(user.birth_date).toLocaleDateString('es-MX', {
-                              day: 'numeric',
-                              month: 'short',
-                              year: 'numeric',
-                            }) : '-'}
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                              contact.currentStatus === 'at_risk'
+                                ? 'bg-red-100 text-red-700'
+                                : contact.currentStatus === 'monitoring'
+                                ? 'bg-yellow-100 text-yellow-700'
+                                : 'bg-green-100 text-green-700'
+                            }`}>
+                              {contact.currentStatus === 'at_risk' && '🚨 En riesgo'}
+                              {contact.currentStatus === 'monitoring' && '👀 Monitoreo'}
+                              {contact.currentStatus === 'stable' && '✓ Estable'}
+                            </span>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-slate-600">
-                            {age ? `${age} años` : '-'}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-slate-600">
-                            {user.gender ? GENDER_LABELS[user.gender] || user.gender : '-'}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-slate-600">
-                            {user.phone || '-'}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-slate-500 text-sm">
-                            {new Date(user.created_at).toLocaleDateString('es-MX', {
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
+                            {new Date(contact.consentDate).toLocaleDateString('es-MX', {
                               day: 'numeric',
                               month: 'short',
                               year: 'numeric',
                             })}
                           </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
+                            {contact.lastIntervention
+                              ? new Date(contact.lastIntervention).toLocaleDateString('es-MX', {
+                                  day: 'numeric',
+                                  month: 'short',
+                                })
+                              : 'Nunca'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-right">
+                            <div className="flex justify-end space-x-2">
+                              <button
+                                onClick={() => handleViewHistory(contact.anonymousId, contact.name)}
+                                className="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded-lg"
+                              >
+                                Historial
+                              </button>
+                              <button
+                                onClick={() => handleContactClick(contact)}
+                                className="px-3 py-1.5 text-sm bg-primary text-white rounded-lg hover:bg-primary-700"
+                              >
+                                Registrar contacto
+                              </button>
+                            </div>
+                          </td>
                         </tr>
-                        );
-                      })}
+                      ))}
                     </tbody>
                   </table>
                 </div>
-              ) : (
-                <div className="p-12 text-center">
-                  <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <span className="text-3xl">👥</span>
-                  </div>
-                  <p className="text-slate-500">No hay usuarios registrados todavía</p>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          /* Dashboard Tab */
-          <>
-        {/* Stats cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-2xl p-6 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-slate-500 text-sm">Total registros</p>
-                <p className="text-3xl font-bold text-slate-800">{stats?.totalLogs || 0}</p>
-              </div>
-              <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
-                <span className="text-2xl">📊</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl p-6 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-slate-500 text-sm">Esta semana</p>
-                <p className="text-3xl font-bold text-slate-800">{stats?.weekLogs || 0}</p>
-              </div>
-              <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
-                <span className="text-2xl">📈</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl p-6 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-slate-500 text-sm">Usuarios activos</p>
-                <p className="text-3xl font-bold text-slate-800">{stats?.activeUsers || 0}</p>
-              </div>
-              <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-                <span className="text-2xl">👥</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl p-6 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-slate-500 text-sm">% Emociones negativas</p>
-                <p className={`text-3xl font-bold ${Number(negativePercentage) > 30 ? 'text-red-500' : 'text-slate-800'}`}>
-                  {negativePercentage}%
-                </p>
-              </div>
-              <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
-                <span className="text-2xl">⚠️</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Charts row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-          {/* Distribución de emociones */}
-          <div className="bg-white rounded-2xl p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-800 mb-4">
-              Distribución de emociones
-            </h2>
-            <div className="h-64 flex items-center justify-center">
-              {totalEmotions > 0 ? (
-                <Doughnut
-                  data={emotionChartData}
-                  options={{
-                    plugins: {
-                      legend: {
-                        position: 'bottom',
-                      },
-                    },
-                    maintainAspectRatio: false,
-                  }}
-                />
-              ) : (
-                <p className="text-slate-400">Sin datos disponibles</p>
-              )}
-            </div>
-          </div>
-
-          {/* Tendencias diarias */}
-          <div className="bg-white rounded-2xl p-6 shadow-sm lg:col-span-2">
-            <h2 className="text-lg font-semibold text-slate-800 mb-4">
-              Tendencias diarias
-            </h2>
-            <div className="h-64">
-              {dailyTrends.length > 0 ? (
-                <Line
-                  data={trendChartData}
-                  options={{
-                    plugins: {
-                      legend: {
-                        position: 'top',
-                      },
-                    },
-                    scales: {
-                      y: {
-                        beginAtZero: true,
-                      },
-                    },
-                    maintainAspectRatio: false,
-                  }}
-                />
-              ) : (
-                <div className="h-full flex items-center justify-center">
-                  <p className="text-slate-400">Sin datos disponibles</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Segunda fila */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Horas pico */}
-          <div className="bg-white rounded-2xl p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-800 mb-4">
-              Horarios de uso
-            </h2>
-            <div className="h-64">
-              <Bar
-                data={hoursChartData}
-                options={{
-                  plugins: {
-                    legend: {
-                      display: false,
-                    },
-                  },
-                  scales: {
-                    y: {
-                      beginAtZero: true,
-                    },
-                  },
-                  maintainAspectRatio: false,
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Alertas */}
-          <div className="bg-white rounded-2xl p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-800 mb-4">
-              Usuarios que podrían necesitar apoyo
-            </h2>
-            {atRisk.length > 0 ? (
-              <div className="space-y-3">
-                {atRisk.slice(0, 5).map((device, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center justify-between p-3 bg-red-50 rounded-xl"
-                  >
-                    <div>
-                      <p className="font-medium text-slate-800">
-                        Usuario {device.deviceId}
-                      </p>
-                      <p className="text-sm text-slate-500">
-                        {device.negativeCount} registros negativos en 5 días
-                      </p>
-                    </div>
-                    <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-                      <span className="text-red-500 font-semibold">{device.negativeCount}</span>
-                    </div>
-                  </div>
-                ))}
               </div>
             ) : (
-              <div className="h-48 flex items-center justify-center">
-                <div className="text-center">
-                  <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <span className="text-3xl">✓</span>
+              <div className="bg-white rounded-2xl p-12 shadow-sm text-center">
+                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <span className="text-3xl">🤝</span>
+                </div>
+                <h3 className="text-lg font-medium text-slate-800 mb-2">
+                  Sin contactos registrados
+                </h3>
+                <p className="text-slate-500">
+                  Aún no hay usuarios que hayan dado su consentimiento para contacto de apoyo.
+                </p>
+              </div>
+            )}
+
+            {/* Estadísticas de estado */}
+            {contacts.length > 0 && (
+              <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-white rounded-xl p-4 shadow-sm">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                      <span>🚨</span>
+                    </div>
+                    <div>
+                      <p className="text-sm text-slate-500">En riesgo</p>
+                      <p className="text-2xl font-bold text-red-600">
+                        {contacts.filter(c => c.currentStatus === 'at_risk').length}
+                      </p>
+                    </div>
                   </div>
-                  <p className="text-slate-500">
-                    No hay usuarios en situación de alerta
-                  </p>
+                </div>
+                <div className="bg-white rounded-xl p-4 shadow-sm">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
+                      <span>👀</span>
+                    </div>
+                    <div>
+                      <p className="text-sm text-slate-500">En monitoreo</p>
+                      <p className="text-2xl font-bold text-yellow-600">
+                        {contacts.filter(c => c.currentStatus === 'monitoring').length}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-white rounded-xl p-4 shadow-sm">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                      <span>✓</span>
+                    </div>
+                    <div>
+                      <p className="text-sm text-slate-500">Estables</p>
+                      <p className="text-2xl font-bold text-green-600">
+                        {contacts.filter(c => c.currentStatus === 'stable').length}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
-          </div>
-        </div>
-
-        {/* Footer disclaimer */}
-        <div className="mt-8 p-4 bg-slate-100 rounded-xl">
-          <p className="text-sm text-slate-500 text-center">
-            📊 Todos los datos son anónimos y agregados. No se almacena información personal identificable.
-            <br />
-            Este panel es solo para uso institucional autorizado.
-          </p>
-        </div>
           </>
         )}
       </main>
+
+      {/* Modals */}
+      <InterventionModal
+        isOpen={interventionModalOpen}
+        onClose={() => {
+          setInterventionModalOpen(false);
+          setSelectedContact(null);
+        }}
+        contact={selectedContact}
+        onSave={loadData}
+      />
+
+      {historyContact && (
+        <InterventionHistoryModal
+          isOpen={historyModalOpen}
+          onClose={() => {
+            setHistoryModalOpen(false);
+            setHistoryContact(null);
+          }}
+          anonymousId={historyContact.anonymousId}
+          contactName={historyContact.name}
+        />
+      )}
     </div>
   );
 }
