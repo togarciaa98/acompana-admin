@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -420,6 +422,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyContact, setHistoryContact] = useState<{ anonymousId: string; name: string } | null>(null);
 
+  // PDF generation state
+  const [generatingPDF, setGeneratingPDF] = useState(false);
+
   useEffect(() => {
     loadData();
   }, [timeRange]);
@@ -513,6 +518,310 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       }
     }
     setExpandedAlerts(newExpanded);
+  };
+
+  // Generación de reporte PDF semanal
+  const generateWeeklyReport = async () => {
+    setGeneratingPDF(true);
+
+    try {
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const today = new Date();
+      const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      // Header
+      doc.setFillColor(175, 39, 47); // Primary color
+      doc.rect(0, 0, pageWidth, 40, 'F');
+
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(24);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Reporte Semanal', 20, 25);
+
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Panel Acompaña - Salud Mental Puebla', 20, 35);
+
+      // Fecha del reporte
+      doc.setTextColor(100, 100, 100);
+      doc.setFontSize(10);
+      doc.text(`Generado: ${today.toLocaleDateString('es-MX', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })}`, 20, 50);
+      doc.text(`Período: ${weekAgo.toLocaleDateString('es-MX')} - ${today.toLocaleDateString('es-MX')}`, 20, 56);
+
+      let yPos = 70;
+
+      // =====================
+      // SECCIÓN 1: ÍNDICE ACOMPAÑA
+      // =====================
+      doc.setFillColor(245, 245, 245);
+      doc.rect(15, yPos - 5, pageWidth - 30, 35, 'F');
+
+      doc.setTextColor(175, 39, 47);
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Indice Acompana', 20, yPos + 5);
+
+      doc.setTextColor(50, 50, 50);
+      doc.setFontSize(36);
+      doc.text(`${indiceAcompana?.total || 0}/100`, 20, yPos + 25);
+
+      // Subindicadores
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Frecuencia: ${indiceAcompana?.frecuencia || 0}  |  Balance: ${indiceAcompana?.balance || 0}  |  Recuperacion: ${indiceAcompana?.recuperacion || 0}`, 100, yPos + 15);
+
+      if (indiceAcompana && indiceAcompana.cambioSemanal !== 0) {
+        const cambioText = indiceAcompana.cambioSemanal > 0
+          ? `+${indiceAcompana.cambioSemanal}% vs semana anterior`
+          : `${indiceAcompana.cambioSemanal}% vs semana anterior`;
+        doc.setTextColor(indiceAcompana.cambioSemanal > 0 ? 34 : 239, indiceAcompana.cambioSemanal > 0 ? 197 : 68, indiceAcompana.cambioSemanal > 0 ? 94 : 68);
+        doc.text(cambioText, 100, yPos + 25);
+      }
+
+      yPos += 45;
+
+      // =====================
+      // SECCIÓN 2: ESTADÍSTICAS GENERALES
+      // =====================
+      doc.setTextColor(50, 50, 50);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Estadisticas del Periodo', 20, yPos);
+      yPos += 10;
+
+      const statsData = [
+        ['Total registros emocionales', String(stats?.totalLogs || 0)],
+        ['Registros esta semana', String(stats?.weekLogs || 0)],
+        ['Dispositivos activos', String(stats?.activeUsers || 0)],
+        ['% Emociones negativas', `${negativePercentage}%`],
+        ['Usuarios anonimos totales', String(userStats?.total || 0)],
+        ['Nuevos esta semana', String(userStats?.thisWeek || 0)],
+      ];
+
+      autoTable(doc, {
+        startY: yPos,
+        head: [['Metrica', 'Valor']],
+        body: statsData,
+        theme: 'striped',
+        headStyles: { fillColor: [175, 39, 47] },
+        margin: { left: 20, right: 20 },
+      });
+
+      yPos = (doc as any).lastAutoTable.finalY + 15;
+
+      // =====================
+      // SECCIÓN 3: HORARIOS CRÍTICOS
+      // =====================
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Horarios de Mayor Actividad', 20, yPos);
+      yPos += 10;
+
+      // Encontrar las 5 horas con más registros
+      const sortedHours = Object.entries(peakHours)
+        .map(([hour, count]) => ({ hour: parseInt(hour), count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+
+      if (sortedHours.length > 0) {
+        const hoursData = sortedHours.map(h => [
+          `${h.hour}:00 - ${h.hour + 1}:00`,
+          String(h.count),
+          h.count > 10 ? 'Alto' : h.count > 5 ? 'Medio' : 'Bajo'
+        ]);
+
+        autoTable(doc, {
+          startY: yPos,
+          head: [['Horario', 'Registros', 'Nivel']],
+          body: hoursData,
+          theme: 'striped',
+          headStyles: { fillColor: [175, 39, 47] },
+          margin: { left: 20, right: 20 },
+        });
+
+        yPos = (doc as any).lastAutoTable.finalY + 15;
+      }
+
+      // =====================
+      // SECCIÓN 4: ALERTAS ACTIVAS
+      // =====================
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Resumen de Alertas', 20, yPos);
+      yPos += 10;
+
+      const alertsData = [
+        ['Prioritario (5+ negativos)', String(alertsByLevel?.totals.prioritario || 0), 'Requiere intervencion inmediata'],
+        ['Atencion (3-4 negativos)', String(alertsByLevel?.totals.atencion || 0), 'Monitoreo cercano'],
+        ['Preventivo (1-2 negativos)', String(alertsByLevel?.totals.preventivo || 0), 'Seguimiento ligero'],
+      ];
+
+      autoTable(doc, {
+        startY: yPos,
+        head: [['Nivel', 'Cantidad', 'Accion Sugerida']],
+        body: alertsData,
+        theme: 'striped',
+        headStyles: { fillColor: [175, 39, 47] },
+        margin: { left: 20, right: 20 },
+        didParseCell: (data) => {
+          if (data.section === 'body' && data.column.index === 0) {
+            if (data.row.index === 0) data.cell.styles.textColor = [220, 38, 38];
+            if (data.row.index === 1) data.cell.styles.textColor = [217, 119, 6];
+            if (data.row.index === 2) data.cell.styles.textColor = [22, 163, 74];
+          }
+        }
+      });
+
+      yPos = (doc as any).lastAutoTable.finalY + 15;
+
+      // Nueva página si es necesario
+      if (yPos > 230) {
+        doc.addPage();
+        yPos = 20;
+      }
+
+      // =====================
+      // SECCIÓN 5: RECOMENDACIONES ACCIONABLES
+      // =====================
+      if (recommendations.length > 0) {
+        doc.setFontSize(14);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Recomendaciones Accionables', 20, yPos);
+        yPos += 10;
+
+        const recsData = recommendations.map(rec => [
+          rec.priority.toUpperCase(),
+          rec.title,
+          rec.action,
+        ]);
+
+        autoTable(doc, {
+          startY: yPos,
+          head: [['Prioridad', 'Situacion', 'Accion Sugerida']],
+          body: recsData,
+          theme: 'striped',
+          headStyles: { fillColor: [175, 39, 47] },
+          margin: { left: 20, right: 20 },
+          columnStyles: {
+            0: { cellWidth: 25 },
+            1: { cellWidth: 60 },
+            2: { cellWidth: 'auto' },
+          },
+          didParseCell: (data) => {
+            if (data.section === 'body' && data.column.index === 0) {
+              const text = String(data.cell.raw);
+              if (text === 'URGENTE') data.cell.styles.textColor = [220, 38, 38];
+              if (text === 'SUGERIDO') data.cell.styles.textColor = [217, 119, 6];
+              if (text === 'OPORTUNIDAD') data.cell.styles.textColor = [22, 163, 74];
+            }
+          }
+        });
+
+        yPos = (doc as any).lastAutoTable.finalY + 15;
+      }
+
+      // Nueva página si es necesario
+      if (yPos > 230) {
+        doc.addPage();
+        yPos = 20;
+      }
+
+      // =====================
+      // SECCIÓN 6: COMPARATIVAS TEMPORALES
+      // =====================
+      if (temporalData && temporalData.weekComparison.metrics.length > 0) {
+        doc.setFontSize(14);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Comparativa Semanal', 20, yPos);
+        yPos += 10;
+
+        const compData = temporalData.weekComparison.metrics.map(m => [
+          m.label,
+          String(m.previous),
+          String(m.current),
+          `${m.change > 0 ? '+' : ''}${m.change}${m.label.includes('%') ? '%' : ''}`,
+        ]);
+
+        autoTable(doc, {
+          startY: yPos,
+          head: [['Metrica', 'Semana Anterior', 'Esta Semana', 'Cambio']],
+          body: compData,
+          theme: 'striped',
+          headStyles: { fillColor: [175, 39, 47] },
+          margin: { left: 20, right: 20 },
+        });
+
+        yPos = (doc as any).lastAutoTable.finalY + 15;
+      }
+
+      // =====================
+      // SECCIÓN 7: IMPACTO DE INTERVENCIONES
+      // =====================
+      if (impactMetrics && impactMetrics.totalInterventions > 0) {
+        if (yPos > 230) {
+          doc.addPage();
+          yPos = 20;
+        }
+
+        doc.setFontSize(14);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Impacto de Intervenciones', 20, yPos);
+        yPos += 10;
+
+        const impactData = [
+          ['Total intervenciones', String(impactMetrics.totalInterventions)],
+          ['Mejora a las 24h', `${impactMetrics.improvementAt24h}%`],
+          ['Mejora a las 72h', `${impactMetrics.improvementAt72h}%`],
+          ['Emocion promedio antes', String(impactMetrics.avgEmotionBefore)],
+          ['Emocion promedio despues', String(impactMetrics.avgEmotionAfter)],
+        ];
+
+        autoTable(doc, {
+          startY: yPos,
+          head: [['Metrica', 'Valor']],
+          body: impactData,
+          theme: 'striped',
+          headStyles: { fillColor: [175, 39, 47] },
+          margin: { left: 20, right: 20 },
+        });
+
+        yPos = (doc as any).lastAutoTable.finalY + 15;
+      }
+
+      // =====================
+      // FOOTER
+      // =====================
+      const pageCount = doc.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(150, 150, 150);
+        doc.text(
+          `Pagina ${i} de ${pageCount} | Generado por Panel Acompana | Confidencial - Solo uso institucional`,
+          pageWidth / 2,
+          doc.internal.pageSize.getHeight() - 10,
+          { align: 'center' }
+        );
+      }
+
+      // Guardar el PDF
+      const fileName = `reporte-acompana-${today.toISOString().split('T')[0]}.pdf`;
+      doc.save(fileName);
+
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Error al generar el reporte. Por favor intenta de nuevo.');
+    }
+
+    setGeneratingPDF(false);
   };
 
   const emotionChartData = {
@@ -649,18 +958,39 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             </div>
             <div className="flex items-center space-x-4">
               {activeTab === 'stats' && (
-                <div className="flex items-center space-x-2">
-                  <span className="text-sm text-slate-500">Período:</span>
-                  <select
-                    value={timeRange}
-                    onChange={(e) => setTimeRange(Number(e.target.value))}
-                    className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                <>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-sm text-slate-500">Período:</span>
+                    <select
+                      value={timeRange}
+                      onChange={(e) => setTimeRange(Number(e.target.value))}
+                      className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    >
+                      <option value={7}>Últimos 7 días</option>
+                      <option value={14}>Últimos 14 días</option>
+                      <option value={30}>Últimos 30 días</option>
+                    </select>
+                  </div>
+                  <button
+                    onClick={generateWeeklyReport}
+                    disabled={generatingPDF}
+                    className="flex items-center space-x-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 text-sm font-medium transition-colors"
                   >
-                    <option value={7}>Últimos 7 días</option>
-                    <option value={14}>Últimos 14 días</option>
-                    <option value={30}>Últimos 30 días</option>
-                  </select>
-                </div>
+                    {generatingPDF ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Generando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <span>Reporte PDF</span>
+                      </>
+                    )}
+                  </button>
+                </>
               )}
               <button
                 onClick={loadData}
