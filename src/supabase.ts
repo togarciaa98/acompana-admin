@@ -495,3 +495,408 @@ export async function getTabCounts(): Promise<{ alerts: number; contacts: number
     contacts: contactCount || 0,
   };
 }
+
+// ============================================
+// ÍNDICE ACOMPAÑA - KPI Principal (0-100)
+// ============================================
+
+export type IndiceAcompana = {
+  total: number;
+  frecuencia: number;
+  balance: number;
+  recuperacion: number;
+  cambioSemanal: number;
+};
+
+// Emociones clasificadas
+const EMOCIONES_POSITIVAS = ['muy-bien', 'bien'];
+const EMOCIONES_NEUTRAS = ['neutral', 'regular'];
+const EMOCIONES_NEGATIVAS = ['mal', 'muy-mal'];
+
+export async function getIndiceAcompana(): Promise<IndiceAcompana> {
+  const today = new Date();
+  const oneWeekAgo = new Date(today);
+  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+  const twoWeeksAgo = new Date(today);
+  twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
+
+  // 1. Obtener logs de las últimas 2 semanas
+  const { data: allLogs } = await supabase
+    .from('emotion_logs')
+    .select('device_id, emotion, created_at')
+    .gte('created_at', twoWeeksAgo.toISOString())
+    .order('created_at', { ascending: true });
+
+  if (!allLogs || allLogs.length === 0) {
+    return { total: 0, frecuencia: 0, balance: 0, recuperacion: 0, cambioSemanal: 0 };
+  }
+
+  // Separar por semana
+  const thisWeekLogs = allLogs.filter(l => new Date(l.created_at) >= oneWeekAgo);
+  const lastWeekLogs = allLogs.filter(l => new Date(l.created_at) < oneWeekAgo);
+
+  // 2. FRECUENCIA: Comparar usuarios activos esta semana vs semana pasada
+  const thisWeekDevices = new Set(thisWeekLogs.map(l => l.device_id)).size;
+  const lastWeekDevices = new Set(lastWeekLogs.map(l => l.device_id)).size;
+
+  let frecuencia = 50; // Base
+  if (lastWeekDevices > 0) {
+    const ratio = thisWeekDevices / lastWeekDevices;
+    frecuencia = Math.min(100, Math.max(0, ratio * 50 + 25)); // Escalar entre 25-100
+  } else if (thisWeekDevices > 0) {
+    frecuencia = 75; // Nuevos usuarios, señal positiva
+  }
+
+  // 3. BALANCE: % de emociones positivas/neutras vs negativas
+  const thisWeekEmotions = thisWeekLogs.map(l => l.emotion);
+  const positiveNeutral = thisWeekEmotions.filter(e =>
+    EMOCIONES_POSITIVAS.includes(e) || EMOCIONES_NEUTRAS.includes(e)
+  ).length;
+  const total = thisWeekEmotions.length;
+  const balance = total > 0 ? (positiveNeutral / total) * 100 : 50;
+
+  // 4. RECUPERACIÓN: % de usuarios que mejoraron después de días malos
+  const deviceEmotions = new Map<string, { hadBad: boolean; improved: boolean }>();
+
+  // Agrupar logs por dispositivo ordenados por fecha
+  const byDevice = new Map<string, typeof allLogs>();
+  thisWeekLogs.forEach(log => {
+    if (!byDevice.has(log.device_id)) {
+      byDevice.set(log.device_id, []);
+    }
+    byDevice.get(log.device_id)!.push(log);
+  });
+
+  byDevice.forEach((logs, deviceId) => {
+    const emotions = logs.map(l => l.emotion);
+    let hadBad = false;
+    let improved = false;
+
+    for (let i = 0; i < emotions.length; i++) {
+      if (EMOCIONES_NEGATIVAS.includes(emotions[i])) {
+        hadBad = true;
+      } else if (hadBad && (EMOCIONES_POSITIVAS.includes(emotions[i]) || EMOCIONES_NEUTRAS.includes(emotions[i]))) {
+        improved = true;
+        break;
+      }
+    }
+
+    deviceEmotions.set(deviceId, { hadBad, improved });
+  });
+
+  const usersWithBadDays = Array.from(deviceEmotions.values()).filter(d => d.hadBad);
+  const usersImproved = usersWithBadDays.filter(d => d.improved);
+  const recuperacion = usersWithBadDays.length > 0
+    ? (usersImproved.length / usersWithBadDays.length) * 100
+    : 70; // Default si no hay días malos
+
+  // 5. ÍNDICE TOTAL: Promedio ponderado
+  const totalIndex = Math.round(
+    (frecuencia * 0.4) + (balance * 0.4) + (recuperacion * 0.2)
+  );
+
+  // 6. CAMBIO SEMANAL: Comparar balance con semana pasada
+  const lastWeekEmotions = lastWeekLogs.map(l => l.emotion);
+  const lastWeekPositiveNeutral = lastWeekEmotions.filter(e =>
+    EMOCIONES_POSITIVAS.includes(e) || EMOCIONES_NEUTRAS.includes(e)
+  ).length;
+  const lastWeekBalance = lastWeekEmotions.length > 0
+    ? (lastWeekPositiveNeutral / lastWeekEmotions.length) * 100
+    : 50;
+
+  const cambioSemanal = Math.round(balance - lastWeekBalance);
+
+  return {
+    total: totalIndex,
+    frecuencia: Math.round(frecuencia),
+    balance: Math.round(balance),
+    recuperacion: Math.round(recuperacion),
+    cambioSemanal,
+  };
+}
+
+// ============================================
+// INSIGHTS AUTOMÁTICOS
+// ============================================
+
+export type AutomaticInsight = {
+  type: 'trend' | 'pattern' | 'peak' | 'streak' | 'alert';
+  icon: string;
+  title: string;
+  message: string;
+  severity: 'positive' | 'neutral' | 'warning';
+};
+
+export async function getAutomaticInsights(): Promise<AutomaticInsight[]> {
+  const insights: AutomaticInsight[] = [];
+  const today = new Date();
+  const twoWeeksAgo = new Date(today);
+  twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
+
+  const { data: logs } = await supabase
+    .from('emotion_logs')
+    .select('emotion, created_at')
+    .gte('created_at', twoWeeksAgo.toISOString());
+
+  if (!logs || logs.length < 5) {
+    insights.push({
+      type: 'alert',
+      icon: '📊',
+      title: 'Datos insuficientes',
+      message: 'Se necesitan más registros para generar insights detallados',
+      severity: 'neutral',
+    });
+    return insights;
+  }
+
+  // 1. PATRÓN POR DÍA DE LA SEMANA
+  const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+  const byDayOfWeek: Record<number, { negative: number; total: number }> = {};
+
+  logs.forEach(log => {
+    const day = new Date(log.created_at).getDay();
+    if (!byDayOfWeek[day]) {
+      byDayOfWeek[day] = { negative: 0, total: 0 };
+    }
+    byDayOfWeek[day].total++;
+    if (EMOCIONES_NEGATIVAS.includes(log.emotion)) {
+      byDayOfWeek[day].negative++;
+    }
+  });
+
+  // Encontrar día con más estrés
+  let worstDay = -1;
+  let worstRatio = 0;
+  let avgRatio = 0;
+  let daysCount = 0;
+
+  Object.entries(byDayOfWeek).forEach(([day, stats]) => {
+    if (stats.total >= 2) { // Mínimo de registros
+      const ratio = stats.negative / stats.total;
+      avgRatio += ratio;
+      daysCount++;
+      if (ratio > worstRatio) {
+        worstRatio = ratio;
+        worstDay = parseInt(day);
+      }
+    }
+  });
+
+  avgRatio = daysCount > 0 ? avgRatio / daysCount : 0;
+
+  if (worstDay >= 0 && worstRatio > avgRatio * 1.2 && worstRatio > 0.2) {
+    const pctAboveAvg = Math.round((worstRatio / avgRatio - 1) * 100);
+    insights.push({
+      type: 'pattern',
+      icon: '📅',
+      title: 'Patrón semanal detectado',
+      message: `Los ${dayNames[worstDay]} muestran ${pctAboveAvg}% más emociones de estrés que el promedio`,
+      severity: 'warning',
+    });
+  }
+
+  // 2. TENDENCIA SEMANAL
+  const oneWeekAgo = new Date(today);
+  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+  const thisWeek = logs.filter(l => new Date(l.created_at) >= oneWeekAgo);
+  const lastWeek = logs.filter(l => new Date(l.created_at) < oneWeekAgo);
+
+  if (thisWeek.length >= 3 && lastWeek.length >= 3) {
+    const thisWeekPositive = thisWeek.filter(l => EMOCIONES_POSITIVAS.includes(l.emotion)).length / thisWeek.length;
+    const lastWeekPositive = lastWeek.filter(l => EMOCIONES_POSITIVAS.includes(l.emotion)).length / lastWeek.length;
+
+    const change = Math.round((thisWeekPositive - lastWeekPositive) * 100);
+
+    if (change > 10) {
+      insights.push({
+        type: 'trend',
+        icon: '📈',
+        title: 'Tendencia positiva',
+        message: `El bienestar emocional mejoró ${change}% respecto a la semana pasada`,
+        severity: 'positive',
+      });
+    } else if (change < -10) {
+      insights.push({
+        type: 'trend',
+        icon: '📉',
+        title: 'Tendencia a observar',
+        message: `Se detectó una disminución del ${Math.abs(change)}% en bienestar esta semana`,
+        severity: 'warning',
+      });
+    }
+  }
+
+  // 3. HORA PICO DE ESTRÉS
+  const byHour: Record<number, { negative: number; total: number }> = {};
+
+  logs.forEach(log => {
+    const hour = new Date(log.created_at).getHours();
+    if (!byHour[hour]) {
+      byHour[hour] = { negative: 0, total: 0 };
+    }
+    byHour[hour].total++;
+    if (EMOCIONES_NEGATIVAS.includes(log.emotion)) {
+      byHour[hour].negative++;
+    }
+  });
+
+  let peakHour = -1;
+  let peakNegativeCount = 0;
+
+  Object.entries(byHour).forEach(([hour, stats]) => {
+    if (stats.negative > peakNegativeCount && stats.total >= 3) {
+      peakNegativeCount = stats.negative;
+      peakHour = parseInt(hour);
+    }
+  });
+
+  if (peakHour >= 0 && peakNegativeCount >= 3) {
+    const hourStr = peakHour === 0 ? '12AM' : peakHour < 12 ? `${peakHour}AM` : peakHour === 12 ? '12PM' : `${peakHour - 12}PM`;
+    insights.push({
+      type: 'peak',
+      icon: '⏰',
+      title: 'Horario crítico identificado',
+      message: `Alrededor de las ${hourStr} hay mayor concentración de emociones difíciles`,
+      severity: 'neutral',
+    });
+  }
+
+  // 4. RACHA POSITIVA (últimos días)
+  const recentLogs = logs
+    .filter(l => new Date(l.created_at) >= new Date(today.getTime() - 5 * 24 * 60 * 60 * 1000))
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  if (recentLogs.length >= 3) {
+    const allPositive = recentLogs.every(l =>
+      EMOCIONES_POSITIVAS.includes(l.emotion) || EMOCIONES_NEUTRAS.includes(l.emotion)
+    );
+
+    if (allPositive) {
+      insights.push({
+        type: 'streak',
+        icon: '🌟',
+        title: 'Racha positiva',
+        message: `Los últimos ${recentLogs.length} registros muestran emociones positivas o neutras`,
+        severity: 'positive',
+      });
+    }
+  }
+
+  return insights;
+}
+
+// ============================================
+// ALERTAS POR NIVEL (3 niveles)
+// ============================================
+
+export type AlertLevel = 'preventivo' | 'atencion' | 'prioritario';
+
+export type AlertWithLevel = AlertWithConsent & {
+  level: AlertLevel;
+  levelLabel: string;
+  levelColor: string;
+};
+
+export type AlertsByLevel = {
+  preventivo: AlertWithLevel[];
+  atencion: AlertWithLevel[];
+  prioritario: AlertWithLevel[];
+  totals: { preventivo: number; atencion: number; prioritario: number };
+};
+
+export async function getAlertsByLevel(): Promise<AlertsByLevel> {
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+  // Obtener todos los logs negativos de los últimos 7 días
+  const { data: riskData, error } = await supabase
+    .from('emotion_logs')
+    .select('device_id, emotion, created_at')
+    .in('emotion', ['muy-mal', 'mal'])
+    .gte('created_at', sevenDaysAgo.toISOString())
+    .order('created_at', { ascending: false });
+
+  if (error || !riskData) {
+    return {
+      preventivo: [],
+      atencion: [],
+      prioritario: [],
+      totals: { preventivo: 0, atencion: 0, prioritario: 0 },
+    };
+  }
+
+  // Contar por dispositivo
+  const deviceCounts = new Map<string, { count: number; lastLog: string }>();
+
+  riskData.forEach(log => {
+    const current = deviceCounts.get(log.device_id);
+    if (!current) {
+      deviceCounts.set(log.device_id, { count: 1, lastLog: log.created_at });
+    } else {
+      current.count++;
+    }
+  });
+
+  // Obtener consentimientos
+  const deviceIds = Array.from(deviceCounts.keys());
+  const { data: consents } = await supabase
+    .from('contact_consent')
+    .select('device_id, anonymous_id, consent_given, consent_withdrawn_date')
+    .in('device_id', deviceIds);
+
+  const consentMap = new Map(consents?.map(c => [c.device_id, c]) || []);
+
+  // Clasificar por nivel
+  const result: AlertsByLevel = {
+    preventivo: [],
+    atencion: [],
+    prioritario: [],
+    totals: { preventivo: 0, atencion: 0, prioritario: 0 },
+  };
+
+  deviceCounts.forEach((stats, deviceId) => {
+    const consent = consentMap.get(deviceId);
+    const hasConsent = consent?.consent_given && !consent?.consent_withdrawn_date;
+
+    let level: AlertLevel;
+    let levelLabel: string;
+    let levelColor: string;
+
+    if (stats.count >= 5) {
+      level = 'prioritario';
+      levelLabel = 'Prioritario';
+      levelColor = '#EF4444'; // Rojo
+    } else if (stats.count >= 3) {
+      level = 'atencion';
+      levelLabel = 'Atención';
+      levelColor = '#F59E0B'; // Amarillo
+    } else {
+      level = 'preventivo';
+      levelLabel = 'Preventivo';
+      levelColor = '#10B981'; // Verde
+    }
+
+    const alert: AlertWithLevel = {
+      anonymousId: consent?.anonymous_id || deviceId.substring(0, 16),
+      deviceId,
+      negativeCount: stats.count,
+      lastActivity: stats.lastLog,
+      alertType: 'emotional_pattern',
+      hasConsent: !!hasConsent,
+      level,
+      levelLabel,
+      levelColor,
+    };
+
+    result[level].push(alert);
+    result.totals[level]++;
+  });
+
+  // Ordenar cada nivel por cantidad de registros negativos (descendente)
+  result.preventivo.sort((a, b) => b.negativeCount - a.negativeCount);
+  result.atencion.sort((a, b) => b.negativeCount - a.negativeCount);
+  result.prioritario.sort((a, b) => b.negativeCount - a.negativeCount);
+
+  return result;
+}

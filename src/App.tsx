@@ -23,9 +23,16 @@ import {
   logIntervention,
   getInterventions,
   getTabCounts,
+  getIndiceAcompana,
+  getAutomaticInsights,
+  getAlertsByLevel,
   AlertWithConsent,
   ContactWithConsent,
   Intervention,
+  IndiceAcompana,
+  AutomaticInsight,
+  AlertsByLevel,
+  AlertWithLevel,
 } from './supabase';
 
 ChartJS.register(
@@ -383,6 +390,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [contacts, setContacts] = useState<ContactWithConsent[]>([]);
   const [tabCounts, setTabCounts] = useState({ alerts: 0, contacts: 0 });
 
+  // Nuevos datos de impacto
+  const [indiceAcompana, setIndiceAcompana] = useState<IndiceAcompana | null>(null);
+  const [insights, setInsights] = useState<AutomaticInsight[]>([]);
+  const [alertsByLevel, setAlertsByLevel] = useState<AlertsByLevel | null>(null);
+  const [alertFilter, setAlertFilter] = useState<'all' | 'preventivo' | 'atencion' | 'prioritario'>('all');
+
   // Modal states
   const [interventionModalOpen, setInterventionModalOpen] = useState(false);
   const [selectedContact, setSelectedContact] = useState<ContactWithConsent | null>(null);
@@ -396,7 +409,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [statsData, distData, trendsData, hoursData, userStatsData, alertsData, contactsData, counts] = await Promise.all([
+      const [statsData, distData, trendsData, hoursData, userStatsData, alertsData, contactsData, counts, indiceData, insightsData, alertsLevelData] = await Promise.all([
         getOverviewStats(),
         getEmotionDistribution(timeRange),
         getDailyTrends(timeRange),
@@ -405,6 +418,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         getAlertsWithConsentStatus(),
         getContactsWithConsent(),
         getTabCounts(),
+        getIndiceAcompana(),
+        getAutomaticInsights(),
+        getAlertsByLevel(),
       ]);
 
       setStats(statsData);
@@ -415,6 +431,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       setAlerts(alertsData);
       setContacts(contactsData);
       setTabCounts(counts);
+      setIndiceAcompana(indiceData);
+      setInsights(insightsData);
+      setAlertsByLevel(alertsLevelData);
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -667,6 +686,109 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               </p>
             </div>
 
+            {/* ÍNDICE ACOMPAÑA - KPI Principal */}
+            <div className="mb-6 bg-gradient-to-r from-primary to-primary-700 rounded-2xl p-6 text-white shadow-lg">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between">
+                <div className="mb-4 lg:mb-0">
+                  <h2 className="text-lg font-medium opacity-90 mb-1">Índice Acompaña</h2>
+                  <div className="flex items-baseline space-x-3">
+                    <span className="text-5xl font-bold">{indiceAcompana?.total || 0}</span>
+                    <span className="text-xl opacity-75">/100</span>
+                    {indiceAcompana && indiceAcompana.cambioSemanal !== 0 && (
+                      <span className={`text-sm px-2 py-1 rounded-full ${
+                        indiceAcompana.cambioSemanal > 0
+                          ? 'bg-green-500/30 text-green-100'
+                          : 'bg-red-500/30 text-red-100'
+                      }`}>
+                        {indiceAcompana.cambioSemanal > 0 ? '▲' : '▼'} {Math.abs(indiceAcompana.cambioSemanal)}% vs semana pasada
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Barra de progreso visual */}
+                <div className="lg:w-1/3">
+                  <div className="h-4 bg-white/20 rounded-full overflow-hidden mb-2">
+                    <div
+                      className="h-full bg-white rounded-full transition-all duration-500"
+                      style={{ width: `${indiceAcompana?.total || 0}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-xs opacity-75">
+                    <span>Crítico</span>
+                    <span>Óptimo</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Subindicadores */}
+              <div className="grid grid-cols-3 gap-4 mt-6 pt-4 border-t border-white/20">
+                <div className="text-center">
+                  <p className="text-sm opacity-75">Frecuencia</p>
+                  <p className="text-2xl font-semibold">{indiceAcompana?.frecuencia || 0}</p>
+                  <p className="text-xs opacity-60">Usuarios activos</p>
+                </div>
+                <div className="text-center border-x border-white/20">
+                  <p className="text-sm opacity-75">Balance</p>
+                  <p className="text-2xl font-semibold">{indiceAcompana?.balance || 0}</p>
+                  <p className="text-xs opacity-60">Emociones positivas</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-sm opacity-75">Recuperación</p>
+                  <p className="text-2xl font-semibold">{indiceAcompana?.recuperacion || 0}</p>
+                  <p className="text-xs opacity-60">Mejora tras crisis</p>
+                </div>
+              </div>
+            </div>
+
+            {/* INSIGHTS AUTOMÁTICOS */}
+            {insights.length > 0 && (
+              <div className="mb-6 bg-white rounded-2xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
+                  <span className="mr-2">💡</span>
+                  Insights de la Semana
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {insights.map((insight, index) => (
+                    <div
+                      key={index}
+                      className={`p-4 rounded-xl border ${
+                        insight.severity === 'positive'
+                          ? 'bg-green-50 border-green-200'
+                          : insight.severity === 'warning'
+                          ? 'bg-amber-50 border-amber-200'
+                          : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-start space-x-3">
+                        <span className="text-2xl">{insight.icon}</span>
+                        <div>
+                          <p className={`font-medium ${
+                            insight.severity === 'positive'
+                              ? 'text-green-800'
+                              : insight.severity === 'warning'
+                              ? 'text-amber-800'
+                              : 'text-slate-800'
+                          }`}>
+                            {insight.title}
+                          </p>
+                          <p className={`text-sm ${
+                            insight.severity === 'positive'
+                              ? 'text-green-600'
+                              : insight.severity === 'warning'
+                              ? 'text-amber-600'
+                              : 'text-slate-600'
+                          }`}>
+                            {insight.message}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Stats cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
               <div className="bg-white rounded-2xl p-6 shadow-sm">
@@ -886,108 +1008,198 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         )}
 
         {/* ============================================ */}
-        {/* TAB 2: ALERTAS */}
+        {/* TAB 2: ALERTAS CON 3 NIVELES */}
         {/* ============================================ */}
         {activeTab === 'alerts' && (
           <>
             {/* Banner explicativo */}
             <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center space-x-2">
-              <span className="text-lg">⚠️</span>
+              <span className="text-lg">📋</span>
               <p className="text-sm text-amber-700">
-                Dispositivos con 3+ registros negativos (muy mal/mal) en los últimos 5 días.
-                Solo puedes contactar a quienes dieron consentimiento explícito.
+                Sistema de alertas con 3 niveles de atención. Solo puedes contactar a quienes dieron consentimiento explícito.
               </p>
             </div>
 
-            {alerts.length > 0 ? (
-              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-slate-200">
-                  <h2 className="text-lg font-semibold text-slate-800">
-                    Dispositivos en alerta ({alerts.length})
-                  </h2>
+            {/* Resumen por nivel - Tarjetas clickeables */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+              <button
+                onClick={() => setAlertFilter('all')}
+                className={`bg-white rounded-xl p-4 shadow-sm text-left transition-all ${
+                  alertFilter === 'all' ? 'ring-2 ring-primary' : 'hover:shadow-md'
+                }`}
+              >
+                <p className="text-sm text-slate-500">Todas</p>
+                <p className="text-2xl font-bold text-slate-800">
+                  {(alertsByLevel?.totals.preventivo || 0) + (alertsByLevel?.totals.atencion || 0) + (alertsByLevel?.totals.prioritario || 0)}
+                </p>
+              </button>
+              <button
+                onClick={() => setAlertFilter('preventivo')}
+                className={`rounded-xl p-4 shadow-sm text-left transition-all ${
+                  alertFilter === 'preventivo' ? 'ring-2 ring-green-500' : 'hover:shadow-md'
+                }`}
+                style={{ backgroundColor: '#ECFDF5' }}
+              >
+                <div className="flex items-center space-x-2">
+                  <span>🟢</span>
+                  <p className="text-sm text-green-700">Preventivo</p>
                 </div>
+                <p className="text-2xl font-bold text-green-700">{alertsByLevel?.totals.preventivo || 0}</p>
+                <p className="text-xs text-green-600">1-2 registros negativos</p>
+              </button>
+              <button
+                onClick={() => setAlertFilter('atencion')}
+                className={`rounded-xl p-4 shadow-sm text-left transition-all ${
+                  alertFilter === 'atencion' ? 'ring-2 ring-amber-500' : 'hover:shadow-md'
+                }`}
+                style={{ backgroundColor: '#FFFBEB' }}
+              >
+                <div className="flex items-center space-x-2">
+                  <span>🟡</span>
+                  <p className="text-sm text-amber-700">Atención</p>
+                </div>
+                <p className="text-2xl font-bold text-amber-700">{alertsByLevel?.totals.atencion || 0}</p>
+                <p className="text-xs text-amber-600">3-4 registros negativos</p>
+              </button>
+              <button
+                onClick={() => setAlertFilter('prioritario')}
+                className={`rounded-xl p-4 shadow-sm text-left transition-all ${
+                  alertFilter === 'prioritario' ? 'ring-2 ring-red-500' : 'hover:shadow-md'
+                }`}
+                style={{ backgroundColor: '#FEF2F2' }}
+              >
+                <div className="flex items-center space-x-2">
+                  <span>🔴</span>
+                  <p className="text-sm text-red-700">Prioritario</p>
+                </div>
+                <p className="text-2xl font-bold text-red-700">{alertsByLevel?.totals.prioritario || 0}</p>
+                <p className="text-xs text-red-600">5+ registros negativos</p>
+              </button>
+            </div>
 
-                <div className="divide-y divide-slate-100">
-                  {alerts.map((alert, index) => (
-                    <div
-                      key={index}
-                      className="p-4 hover:bg-slate-50 flex items-center justify-between"
-                    >
-                      <div className="flex items-center space-x-4">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                          alert.hasConsent ? 'bg-green-100' : 'bg-slate-100'
-                        }`}>
-                          <span className="text-xl">
-                            {alert.hasConsent ? '🤝' : '🔒'}
-                          </span>
+            {/* Lista de alertas filtradas */}
+            {(() => {
+              let filteredAlerts: AlertWithLevel[] = [];
+              if (alertFilter === 'all') {
+                filteredAlerts = [
+                  ...(alertsByLevel?.prioritario || []),
+                  ...(alertsByLevel?.atencion || []),
+                  ...(alertsByLevel?.preventivo || []),
+                ];
+              } else if (alertsByLevel) {
+                filteredAlerts = alertsByLevel[alertFilter] || [];
+              }
+
+              return filteredAlerts.length > 0 ? (
+                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                  <div className="p-6 border-b border-slate-200">
+                    <h2 className="text-lg font-semibold text-slate-800">
+                      {alertFilter === 'all'
+                        ? `Todas las alertas (${filteredAlerts.length})`
+                        : `Alertas ${alertFilter} (${filteredAlerts.length})`}
+                    </h2>
+                  </div>
+
+                  <div className="divide-y divide-slate-100">
+                    {filteredAlerts.map((alert, index) => (
+                      <div
+                        key={index}
+                        className="p-4 hover:bg-slate-50 flex items-center justify-between"
+                      >
+                        <div className="flex items-center space-x-4">
+                          {/* Indicador de nivel */}
+                          <div
+                            className="w-12 h-12 rounded-full flex items-center justify-center"
+                            style={{ backgroundColor: alert.levelColor + '20' }}
+                          >
+                            <span className="text-xl">
+                              {alert.level === 'prioritario' ? '🔴' : alert.level === 'atencion' ? '🟡' : '🟢'}
+                            </span>
+                          </div>
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <p className="font-medium text-slate-800">
+                                ID: {alert.anonymousId.substring(0, 8)}...
+                              </p>
+                              <span
+                                className="px-2 py-0.5 rounded-full text-xs font-medium"
+                                style={{
+                                  backgroundColor: alert.levelColor + '20',
+                                  color: alert.levelColor,
+                                }}
+                              >
+                                {alert.levelLabel}
+                              </span>
+                            </div>
+                            <p className="text-sm text-slate-500">
+                              {alert.negativeCount} registros negativos •
+                              Último: {new Date(alert.lastActivity).toLocaleDateString('es-MX', {
+                                day: 'numeric',
+                                month: 'short',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="font-medium text-slate-800">
-                            ID: {alert.anonymousId}
-                          </p>
-                          <p className="text-sm text-slate-500">
-                            {alert.negativeCount} registros negativos •
-                            Último: {new Date(alert.lastActivity).toLocaleDateString('es-MX', {
-                              day: 'numeric',
-                              month: 'short',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </p>
+
+                        <div className="flex items-center space-x-2">
+                          {alert.hasConsent ? (
+                            <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
+                              ✓ Contactable
+                            </span>
+                          ) : (
+                            <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-full text-sm">
+                              Sin consentimiento
+                            </span>
+                          )}
                         </div>
                       </div>
-
-                      <div className="flex items-center space-x-2">
-                        {alert.hasConsent ? (
-                          <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
-                            Con consentimiento
-                          </span>
-                        ) : (
-                          <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-full text-sm">
-                            Sin consentimiento
-                          </span>
-                        )}
-                        <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-                          <span className="text-red-500 font-semibold text-sm">
-                            {alert.negativeCount}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="bg-white rounded-2xl p-12 shadow-sm text-center">
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <span className="text-3xl">✓</span>
+              ) : (
+                <div className="bg-white rounded-2xl p-12 shadow-sm text-center">
+                  <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <span className="text-3xl">✓</span>
+                  </div>
+                  <h3 className="text-lg font-medium text-slate-800 mb-2">
+                    Sin alertas {alertFilter !== 'all' ? `de nivel ${alertFilter}` : 'activas'}
+                  </h3>
+                  <p className="text-slate-500">
+                    {alertFilter === 'all'
+                      ? 'No hay dispositivos con patrones de riesgo en los últimos 7 días.'
+                      : `No hay alertas de nivel ${alertFilter} actualmente.`}
+                  </p>
                 </div>
-                <h3 className="text-lg font-medium text-slate-800 mb-2">
-                  Sin alertas activas
-                </h3>
-                <p className="text-slate-500">
-                  No hay dispositivos con patrones de riesgo en los últimos 5 días.
-                </p>
-              </div>
-            )}
+              );
+            })()}
 
-            {/* Resumen */}
-            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-white rounded-xl p-4 shadow-sm">
-                <p className="text-sm text-slate-500">Total en alerta</p>
-                <p className="text-2xl font-bold text-slate-800">{alerts.length}</p>
-              </div>
-              <div className="bg-white rounded-xl p-4 shadow-sm">
-                <p className="text-sm text-slate-500">Con consentimiento</p>
-                <p className="text-2xl font-bold text-green-600">
-                  {alerts.filter(a => a.hasConsent).length}
-                </p>
-              </div>
-              <div className="bg-white rounded-xl p-4 shadow-sm">
-                <p className="text-sm text-slate-500">Sin consentimiento</p>
-                <p className="text-2xl font-bold text-slate-400">
-                  {alerts.filter(a => !a.hasConsent).length}
-                </p>
+            {/* Leyenda de niveles */}
+            <div className="mt-6 bg-slate-50 rounded-xl p-4">
+              <p className="text-sm font-medium text-slate-700 mb-3">Descripción de niveles:</p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div className="flex items-start space-x-2">
+                  <span>🟢</span>
+                  <div>
+                    <p className="font-medium text-green-700">Preventivo</p>
+                    <p className="text-slate-500">Seguimiento ligero, posible fluctuación normal</p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-2">
+                  <span>🟡</span>
+                  <div>
+                    <p className="font-medium text-amber-700">Atención</p>
+                    <p className="text-slate-500">Patrón que requiere monitoreo cercano</p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-2">
+                  <span>🔴</span>
+                  <div>
+                    <p className="font-medium text-red-700">Prioritario</p>
+                    <p className="text-slate-500">Situación que puede requerir intervención</p>
+                  </div>
+                </div>
               </div>
             </div>
           </>
