@@ -26,6 +26,11 @@ import {
   getIndiceAcompana,
   getAutomaticInsights,
   getAlertsByLevel,
+  getActionableRecommendations,
+  getTemporalComparisons,
+  getInterventionImpactMetrics,
+  getEarlyWarningPredictions,
+  getUserEmotionalTimeline,
   AlertWithConsent,
   ContactWithConsent,
   Intervention,
@@ -33,6 +38,11 @@ import {
   AutomaticInsight,
   AlertsByLevel,
   AlertWithLevel,
+  ActionableRecommendation,
+  TemporalComparisonData,
+  InterventionImpactMetrics,
+  EarlyWarningData,
+  UserEmotionalTimeline,
 } from './supabase';
 
 ChartJS.register(
@@ -396,6 +406,14 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [alertsByLevel, setAlertsByLevel] = useState<AlertsByLevel | null>(null);
   const [alertFilter, setAlertFilter] = useState<'all' | 'preventivo' | 'atencion' | 'prioritario'>('all');
 
+  // PREMIUM: Nuevos estados para características avanzadas
+  const [recommendations, setRecommendations] = useState<ActionableRecommendation[]>([]);
+  const [temporalData, setTemporalData] = useState<TemporalComparisonData | null>(null);
+  const [impactMetrics, setImpactMetrics] = useState<InterventionImpactMetrics | null>(null);
+  const [earlyWarnings, setEarlyWarnings] = useState<EarlyWarningData | null>(null);
+  const [expandedAlerts, setExpandedAlerts] = useState<Set<string>>(new Set());
+  const [alertTimelines, setAlertTimelines] = useState<Map<string, UserEmotionalTimeline>>(new Map());
+
   // Modal states
   const [interventionModalOpen, setInterventionModalOpen] = useState(false);
   const [selectedContact, setSelectedContact] = useState<ContactWithConsent | null>(null);
@@ -409,7 +427,23 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [statsData, distData, trendsData, hoursData, userStatsData, alertsData, contactsData, counts, indiceData, insightsData, alertsLevelData] = await Promise.all([
+      const [
+        statsData,
+        distData,
+        trendsData,
+        hoursData,
+        userStatsData,
+        alertsData,
+        contactsData,
+        counts,
+        indiceData,
+        insightsData,
+        alertsLevelData,
+        recommendationsData,
+        temporalCompData,
+        impactData,
+        earlyWarningData,
+      ] = await Promise.all([
         getOverviewStats(),
         getEmotionDistribution(timeRange),
         getDailyTrends(timeRange),
@@ -421,6 +455,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         getIndiceAcompana(),
         getAutomaticInsights(),
         getAlertsByLevel(),
+        getActionableRecommendations(),
+        getTemporalComparisons(),
+        getInterventionImpactMetrics(),
+        getEarlyWarningPredictions(),
       ]);
 
       setStats(statsData);
@@ -434,6 +472,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       setIndiceAcompana(indiceData);
       setInsights(insightsData);
       setAlertsByLevel(alertsLevelData);
+      setRecommendations(recommendationsData);
+      setTemporalData(temporalCompData);
+      setImpactMetrics(impactData);
+      setEarlyWarnings(earlyWarningData);
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -453,6 +495,24 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const handleViewHistory = (anonymousId: string, name: string) => {
     setHistoryContact({ anonymousId, name });
     setHistoryModalOpen(true);
+  };
+
+  // Handler para expandir alerta y cargar timeline
+  const handleToggleAlertExpand = async (deviceId: string) => {
+    const newExpanded = new Set(expandedAlerts);
+    if (newExpanded.has(deviceId)) {
+      newExpanded.delete(deviceId);
+    } else {
+      newExpanded.add(deviceId);
+      // Cargar timeline si no existe
+      if (!alertTimelines.has(deviceId)) {
+        const timeline = await getUserEmotionalTimeline(deviceId);
+        if (timeline) {
+          setAlertTimelines(prev => new Map(prev).set(deviceId, timeline));
+        }
+      }
+    }
+    setExpandedAlerts(newExpanded);
   };
 
   const emotionChartData = {
@@ -789,6 +849,46 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               </div>
             )}
 
+            {/* RECOMENDACIONES ACCIONABLES - PREMIUM */}
+            {recommendations.length > 0 && (
+              <div className="mb-6 bg-white rounded-2xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
+                  <span className="mr-2">🎯</span>
+                  Recomendaciones Accionables
+                </h2>
+                <div className="space-y-3">
+                  {recommendations.map((rec) => (
+                    <div
+                      key={rec.id}
+                      className="p-4 rounded-xl border-l-4"
+                      style={{
+                        borderLeftColor: rec.priorityColor,
+                        backgroundColor: rec.priority === 'urgente' ? '#FEF2F2' :
+                                        rec.priority === 'sugerido' ? '#FFFBEB' : '#ECFDF5'
+                      }}
+                    >
+                      <div className="flex items-start space-x-3">
+                        <span className="text-2xl">{rec.priorityIcon}</span>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="font-semibold" style={{ color: rec.priorityColor }}>
+                              {rec.priority.toUpperCase()}: {rec.title}
+                            </p>
+                          </div>
+                          <p className="text-slate-700 font-medium mb-1">
+                            {rec.action}
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            {rec.dataSupport}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Stats cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
               <div className="bg-white rounded-2xl p-6 shadow-sm">
@@ -996,6 +1096,84 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               </div>
             </div>
 
+            {/* COMPARATIVAS TEMPORALES - PREMIUM */}
+            {temporalData && temporalData.weekComparison.metrics.length > 0 && (
+              <div className="bg-white rounded-2xl p-6 shadow-sm mb-6">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
+                  <span className="mr-2">📅</span>
+                  Comparativas Temporales
+                </h2>
+
+                {/* Comparación semana vs semana */}
+                <div className="mb-6">
+                  <p className="text-sm text-slate-500 mb-3">{temporalData.weekComparison.period}</p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {temporalData.weekComparison.metrics.map((metric, index) => (
+                      <div key={index} className="bg-slate-50 rounded-xl p-4">
+                        <p className="text-sm text-slate-500 mb-1">{metric.label}</p>
+                        <div className="flex items-baseline space-x-2">
+                          <span className="text-2xl font-bold text-slate-800">
+                            {metric.current}{metric.label.includes('%') || metric.label.includes('positivas') || metric.label.includes('negativas') ? '%' : ''}
+                          </span>
+                          <span className={`text-sm font-medium flex items-center ${
+                            metric.isPositive ? 'text-green-600' : 'text-red-600'
+                          }`}>
+                            {metric.trend === 'up' ? '↑' : metric.trend === 'down' ? '↓' : '→'}
+                            {Math.abs(metric.change)}{metric.label.includes('%') || metric.label.includes('positivas') || metric.label.includes('negativas') ? '%' : ''}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Anterior: {metric.previous}{metric.label.includes('%') || metric.label.includes('positivas') || metric.label.includes('negativas') ? '%' : ''}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tendencia 30 días */}
+                {temporalData.thirtyDayTrend.length > 0 && (
+                  <div>
+                    <p className="text-sm text-slate-500 mb-3">Tendencia últimos 30 días</p>
+                    <div className="h-40">
+                      <Line
+                        data={{
+                          labels: temporalData.thirtyDayTrend.map(d => {
+                            const date = new Date(d.date);
+                            return date.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
+                          }),
+                          datasets: [{
+                            label: 'Índice de bienestar',
+                            data: temporalData.thirtyDayTrend.map(d => d.indiceAcompana),
+                            borderColor: '#AF272F',
+                            backgroundColor: '#AF272F20',
+                            fill: true,
+                            tension: 0.3,
+                          }]
+                        }}
+                        options={{
+                          plugins: {
+                            legend: { display: false },
+                          },
+                          scales: {
+                            y: {
+                              beginAtZero: true,
+                              max: 100,
+                            },
+                            x: {
+                              ticks: {
+                                maxTicksLimit: 10,
+                              }
+                            }
+                          },
+                          maintainAspectRatio: false,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Footer disclaimer */}
             <div className="mt-8 p-4 bg-slate-100 rounded-xl">
               <p className="text-sm text-slate-500 text-center">
@@ -1019,6 +1197,81 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 Sistema de alertas con 3 niveles de atención. Solo puedes contactar a quienes dieron consentimiento explícito.
               </p>
             </div>
+
+            {/* EARLY WARNING - PREDICCIÓN 72H */}
+            {earlyWarnings && earlyWarnings.users.length > 0 && (
+              <div className="mb-6 bg-gradient-to-r from-amber-50 to-orange-50 rounded-2xl p-6 shadow-sm border border-amber-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-amber-800 flex items-center">
+                    <span className="mr-2">⚠️</span>
+                    Alerta Temprana (próximas 72h)
+                  </h2>
+                  <span className="text-sm text-amber-600">
+                    {earlyWarnings.totalAtRisk} en riesgo • {earlyWarnings.totalWithConsent} contactables
+                  </span>
+                </div>
+                <p className="text-sm text-amber-700 mb-4">
+                  Usuarios que podrían necesitar apoyo pronto basado en sus tendencias emocionales:
+                </p>
+                <div className="space-y-2">
+                  {earlyWarnings.users.slice(0, 5).map((user, index) => (
+                    <div
+                      key={index}
+                      className="bg-white rounded-xl p-4 flex items-center justify-between"
+                    >
+                      <div className="flex items-center space-x-4">
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${
+                          user.riskScore >= 80 ? 'bg-red-500' :
+                          user.riskScore >= 65 ? 'bg-orange-500' : 'bg-amber-500'
+                        }`}>
+                          {user.riskScore}
+                        </div>
+                        <div>
+                          <p className="font-medium text-slate-800">
+                            ID: {user.deviceId}
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            Tendencia: <span className="font-mono">{user.trendArrows}</span> •
+                            {user.daysSincePositive} días sin positivo
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        <div className="flex space-x-1">
+                          {user.recentEmotions.slice(-3).map((emotion, i) => (
+                            <span
+                              key={i}
+                              className="w-6 h-6 rounded-full text-xs flex items-center justify-center"
+                              style={{ backgroundColor: EMOTION_COLORS[emotion] + '30' }}
+                              title={EMOTION_LABELS[emotion]}
+                            >
+                              {emotion === 'muy-bien' ? '😊' :
+                               emotion === 'bien' ? '🙂' :
+                               emotion === 'neutral' ? '😐' :
+                               emotion === 'mal' ? '😟' : '😢'}
+                            </span>
+                          ))}
+                        </div>
+                        {user.hasConsent ? (
+                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs">
+                            ✓ Contactable
+                          </span>
+                        ) : (
+                          <span className="px-2 py-1 bg-slate-100 text-slate-500 rounded-full text-xs">
+                            Sin datos
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {earlyWarnings.users.length > 5 && (
+                  <p className="text-sm text-amber-600 mt-3 text-center">
+                    + {earlyWarnings.users.length - 5} usuarios más en la lista
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Resumen por nivel - Tarjetas clickeables */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -1102,58 +1355,127 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
                   <div className="divide-y divide-slate-100">
                     {filteredAlerts.map((alert, index) => (
-                      <div
-                        key={index}
-                        className="p-4 hover:bg-slate-50 flex items-center justify-between"
-                      >
-                        <div className="flex items-center space-x-4">
-                          {/* Indicador de nivel */}
-                          <div
-                            className="w-12 h-12 rounded-full flex items-center justify-center"
-                            style={{ backgroundColor: alert.levelColor + '20' }}
-                          >
-                            <span className="text-xl">
-                              {alert.level === 'prioritario' ? '🔴' : alert.level === 'atencion' ? '🟡' : '🟢'}
-                            </span>
-                          </div>
-                          <div>
-                            <div className="flex items-center space-x-2">
-                              <p className="font-medium text-slate-800">
-                                ID: {alert.anonymousId.substring(0, 8)}...
-                              </p>
-                              <span
-                                className="px-2 py-0.5 rounded-full text-xs font-medium"
-                                style={{
-                                  backgroundColor: alert.levelColor + '20',
-                                  color: alert.levelColor,
-                                }}
-                              >
-                                {alert.levelLabel}
+                      <div key={index}>
+                        <div
+                          className="p-4 hover:bg-slate-50 flex items-center justify-between cursor-pointer"
+                          onClick={() => handleToggleAlertExpand(alert.deviceId)}
+                        >
+                          <div className="flex items-center space-x-4">
+                            {/* Indicador de nivel */}
+                            <div
+                              className="w-12 h-12 rounded-full flex items-center justify-center"
+                              style={{ backgroundColor: alert.levelColor + '20' }}
+                            >
+                              <span className="text-xl">
+                                {alert.level === 'prioritario' ? '🔴' : alert.level === 'atencion' ? '🟡' : '🟢'}
                               </span>
                             </div>
-                            <p className="text-sm text-slate-500">
-                              {alert.negativeCount} registros negativos •
-                              Último: {new Date(alert.lastActivity).toLocaleDateString('es-MX', {
-                                day: 'numeric',
-                                month: 'short',
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </p>
+                            <div>
+                              <div className="flex items-center space-x-2">
+                                <p className="font-medium text-slate-800">
+                                  ID: {alert.anonymousId.substring(0, 8)}...
+                                </p>
+                                <span
+                                  className="px-2 py-0.5 rounded-full text-xs font-medium"
+                                  style={{
+                                    backgroundColor: alert.levelColor + '20',
+                                    color: alert.levelColor,
+                                  }}
+                                >
+                                  {alert.levelLabel}
+                                </span>
+                              </div>
+                              <p className="text-sm text-slate-500">
+                                {alert.negativeCount} registros negativos •
+                                Último: {new Date(alert.lastActivity).toLocaleDateString('es-MX', {
+                                  day: 'numeric',
+                                  month: 'short',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            {alert.hasConsent ? (
+                              <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
+                                ✓ Contactable
+                              </span>
+                            ) : (
+                              <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-full text-sm">
+                                Sin consentimiento
+                              </span>
+                            )}
+                            <span className={`text-slate-400 transition-transform ${
+                              expandedAlerts.has(alert.deviceId) ? 'rotate-180' : ''
+                            }`}>
+                              ▼
+                            </span>
                           </div>
                         </div>
 
-                        <div className="flex items-center space-x-2">
-                          {alert.hasConsent ? (
-                            <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
-                              ✓ Contactable
-                            </span>
-                          ) : (
-                            <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-full text-sm">
-                              Sin consentimiento
-                            </span>
-                          )}
-                        </div>
+                        {/* LÍNEA EMOCIONAL EXPANDIBLE */}
+                        {expandedAlerts.has(alert.deviceId) && (
+                          <div className="px-4 pb-4 bg-slate-50">
+                            <div className="bg-white rounded-xl p-4 border border-slate-200">
+                              <h4 className="text-sm font-medium text-slate-700 mb-3 flex items-center">
+                                <span className="mr-2">📊</span>
+                                Línea emocional - Últimos 7 días
+                              </h4>
+                              {alertTimelines.has(alert.deviceId) ? (
+                                <>
+                                  <div className="flex items-end justify-between h-24 mb-2">
+                                    {alertTimelines.get(alert.deviceId)?.timeline.map((point, i) => (
+                                      <div key={i} className="flex flex-col items-center flex-1">
+                                        {point.hasIntervention && (
+                                          <span className="text-xs mb-1" title="Intervención">📍</span>
+                                        )}
+                                        {point.emotion ? (
+                                          <div
+                                            className="w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all hover:scale-110"
+                                            style={{
+                                              backgroundColor: EMOTION_COLORS[point.emotion] + '30',
+                                              marginTop: `${(5 - point.emotionScore) * 12}px`
+                                            }}
+                                            title={EMOTION_LABELS[point.emotion] || point.emotion}
+                                          >
+                                            {point.emotion === 'muy-bien' ? '😊' :
+                                             point.emotion === 'bien' ? '🙂' :
+                                             point.emotion === 'neutral' ? '😐' :
+                                             point.emotion === 'mal' ? '😟' : '😢'}
+                                          </div>
+                                        ) : (
+                                          <div
+                                            className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center"
+                                            style={{ marginTop: '24px' }}
+                                          >
+                                            <span className="text-slate-300">—</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="flex justify-between text-xs text-slate-400 border-t pt-2">
+                                    {alertTimelines.get(alert.deviceId)?.timeline.map((point, i) => (
+                                      <span key={i} className="flex-1 text-center">{point.dayLabel}</span>
+                                    ))}
+                                  </div>
+                                  {alertTimelines.get(alert.deviceId)?.hasRecovery && (
+                                    <p className="text-xs text-green-600 mt-2 flex items-center">
+                                      <span className="mr-1">✓</span>
+                                      {alertTimelines.get(alert.deviceId)?.recoveryNote}
+                                    </p>
+                                  )}
+                                </>
+                              ) : (
+                                <div className="flex items-center justify-center h-24">
+                                  <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1372,6 +1694,88 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* IMPACTO DE INTERVENCIONES - PREMIUM */}
+            {impactMetrics && impactMetrics.totalInterventions > 0 && (
+              <div className="mt-6 bg-white rounded-2xl p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
+                  <span className="mr-2">📈</span>
+                  Impacto de Intervenciones
+                </h2>
+
+                {/* Métricas principales */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                  <div className="bg-green-50 rounded-xl p-4 text-center">
+                    <p className="text-sm text-green-600 mb-1">Mejora a las 24h</p>
+                    <p className="text-3xl font-bold text-green-700">{impactMetrics.improvementAt24h}%</p>
+                  </div>
+                  <div className="bg-blue-50 rounded-xl p-4 text-center">
+                    <p className="text-sm text-blue-600 mb-1">Mejora a las 72h</p>
+                    <p className="text-3xl font-bold text-blue-700">{impactMetrics.improvementAt72h}%</p>
+                  </div>
+                  <div className="bg-purple-50 rounded-xl p-4 text-center">
+                    <p className="text-sm text-purple-600 mb-1">Total intervenciones</p>
+                    <p className="text-3xl font-bold text-purple-700">{impactMetrics.totalInterventions}</p>
+                  </div>
+                  <div className="bg-amber-50 rounded-xl p-4 text-center">
+                    <p className="text-sm text-amber-600 mb-1">Días a recuperación</p>
+                    <p className="text-3xl font-bold text-amber-700">{impactMetrics.avgDaysToRecovery || '—'}</p>
+                  </div>
+                </div>
+
+                {/* Antes vs Después */}
+                <div className="bg-slate-50 rounded-xl p-4 mb-4">
+                  <p className="text-sm text-slate-500 mb-2">Promedio emocional antes vs después</p>
+                  <div className="flex items-center justify-center space-x-4">
+                    <div className="text-center">
+                      <span className="text-3xl">
+                        {impactMetrics.avgEmotionBefore <= 2 ? '😢' :
+                         impactMetrics.avgEmotionBefore <= 3 ? '😟' :
+                         impactMetrics.avgEmotionBefore <= 4 ? '😐' : '🙂'}
+                      </span>
+                      <p className="text-lg font-bold text-slate-700">{impactMetrics.avgEmotionBefore}</p>
+                      <p className="text-xs text-slate-400">Antes</p>
+                    </div>
+                    <span className="text-2xl text-slate-400">→</span>
+                    <div className="text-center">
+                      <span className="text-3xl">
+                        {impactMetrics.avgEmotionAfter <= 2 ? '😢' :
+                         impactMetrics.avgEmotionAfter <= 3 ? '😟' :
+                         impactMetrics.avgEmotionAfter <= 4 ? '🙂' : '😊'}
+                      </span>
+                      <p className="text-lg font-bold text-green-600">{impactMetrics.avgEmotionAfter}</p>
+                      <p className="text-xs text-slate-400">Después</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Efectividad por tipo */}
+                {impactMetrics.byType.length > 0 && (
+                  <div>
+                    <p className="text-sm text-slate-500 mb-3">Efectividad por tipo de intervención</p>
+                    <div className="space-y-2">
+                      {impactMetrics.byType.map((type, index) => (
+                        <div key={index} className="flex items-center space-x-3">
+                          <span className="text-sm text-slate-600 w-40 truncate">{type.typeLabel}</span>
+                          <div className="flex-1 h-4 bg-slate-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-primary rounded-full transition-all"
+                              style={{ width: `${type.effectivenessRate}%` }}
+                            />
+                          </div>
+                          <span className="text-sm font-medium text-slate-700 w-16 text-right">
+                            {type.effectivenessRate}%
+                          </span>
+                          <span className="text-xs text-slate-400 w-12">
+                            ({type.count})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </>
